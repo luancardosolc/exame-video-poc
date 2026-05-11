@@ -333,7 +333,7 @@
       text-shadow: 0 1px 3px rgba(0,0,0,0.6);
     }
 
-    /* --- CONTROLES DO PLAYER (center-bottom) --- */
+    /* --- CONTROLES DO PLAYER (acima do footer) --- */
     .player-controls {
       position: absolute;
       bottom: 155px;
@@ -772,24 +772,29 @@ function createYouTubePlayer(videoId) {
     return;
   }
 
+  // file:// retorna origin 'null' (string), o que quebra postMessage da API do YouTube.
+  // Só passamos origin quando estamos em http/https.
+  const playerVars = {
+    autoplay: 1,
+    mute: 1,       // OBRIGATÓRIO para autoplay no mobile
+    controls: 0,
+    rel: 0,
+    playsinline: 1,// OBRIGATÓRIO: evita fullscreen automático no iOS
+    fs: 0,
+    modestbranding: 1,
+    iv_load_policy: 3,
+    disablekb: 1,
+    enablejsapi: 1,
+  };
+  if (location.protocol !== 'file:') {
+    playerVars.origin = window.location.origin;
+  }
+
   ytPlayer = new YT.Player('yt-player-el', {
     width: '100%',
     height: '100%',
     videoId: videoId,
-    playerVars: {
-      // autoplay: o browser exige mute=1 para autoplay funcionar
-      autoplay: 1,
-      mute: 1,       // OBRIGATÓRIO para autoplay no mobile
-      controls: 0,   // esconde controles nativos
-      rel: 0,        // sem vídeos relacionados
-      playsinline: 1,// OBRIGATÓRIO: evita fullscreen automático no iOS
-      fs: 0,         // desabilita botão fullscreen nativo
-      modestbranding: 1,
-      iv_load_policy: 3, // sem anotações
-      disablekb: 1,  // sem controles de teclado
-      enablejsapi: 1,// habilita controle via JS
-      origin: window.location.origin || 'http://localhost',
-    },
+    playerVars,
     events: {
       onReady: onYTReady,
       onStateChange: onYTStateChange,
@@ -867,11 +872,10 @@ function createVimeoPlayer(videoId) {
 
   /*
     LIMITAÇÕES DO VIMEO iframe:
-    - O parâmetro background=1 esconde controles e remove interação
+    - O parâmetro background=1 esconde controles e remove interação visual
     - autoplay=1 com muted=1 funciona melhor que YouTube no mobile
-    - Não tem API tão completa quanto YouTube IFrame API para controles externos
-    - background=1 desabilita controles completamente (ideal para POC)
-    - Diferente do YouTube, Vimeo permite mais customização visual
+    - Controle de volume via postMessage direto (sem SDK necessário)
+    - Referência: https://developer.vimeo.com/player/sdk/postmessage
   */
   wrapper.innerHTML = `
     <iframe
@@ -903,6 +907,10 @@ function togglePlay() {
   const source = SOURCES[currentMode];
 
   if (source.type === 'youtube' && ytPlayer) {
+    if (typeof ytPlayer.pauseVideo !== 'function') {
+      showToast('Player ainda carregando...');
+      return;
+    }
     if (isPlaying) {
       ytPlayer.pauseVideo();
     } else {
@@ -922,14 +930,26 @@ function toggleMute() {
   const source = SOURCES[currentMode];
 
   if (source.type === 'youtube' && ytPlayer) {
+    if (typeof ytPlayer.unMute !== 'function') {
+      showToast('Player ainda carregando...');
+      return;
+    }
     if (isMuted) {
       ytPlayer.unMute();
       ytPlayer.setVolume(80);
     } else {
       ytPlayer.mute();
     }
-  } else {
-    showToast('Mute: use controles do Vimeo (background mode)');
+  } else if (source.type === 'vimeo') {
+    // Vimeo aceita postMessage direto sem precisar do SDK
+    // background=1 desabilita UI mas não bloqueia a API de mensagens
+    const iframe = document.getElementById('vimeo-iframe');
+    if (iframe && iframe.contentWindow) {
+      const msg = isMuted
+        ? { method: 'setVolume', value: 1 }
+        : { method: 'setVolume', value: 0 };
+      iframe.contentWindow.postMessage(JSON.stringify(msg), 'https://player.vimeo.com');
+    }
   }
 
   isMuted = !isMuted;
@@ -1089,9 +1109,10 @@ setTimeout(() => {
      - YouTube ToS proíbe overlays que cubram o player de forma enganosa.
 
   3. VIMEO:
-     - background=1 remove controles e interação completamente.
-     - Ideal para uso como background layer, mas perde controle granular.
-     - Sem API JS fácil em iframe simples (precisa do Vimeo Player SDK).
+     - background=1 remove controles visuais mas não bloqueia postMessage API.
+     - Volume controlado via postMessage({ method: 'setVolume', value: 0-1 }).
+     - Sem necessidade do SDK completo para operações básicas de volume.
+     - Diferente do YouTube, Vimeo permite mais customização visual.
 
   4. POR QUE APPS NATIVOS SÃO MELHORES:
      - React Native ExoPlayer (Android) / AVPlayer (iOS):
