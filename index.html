@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <!-- viewport moderna: dvh evita bugs de Safari iOS com barra de endereços -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Video POC — Social App</title>
+  <style>
+    /* =====================================================
+       RESET MÍNIMO
+       ===================================================== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #000;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+      /* Evita scroll acidental */
+      touch-action: pan-y;
+    }
+
+    /* =====================================================
+       Z-INDEX MAP — camadas bem definidas
+       0    → corpo da página
+       10   → APP LAYER (container root)
+       20   → VIDEO LAYER (iframe/player)
+       30   → OVERLAY LAYER (UI por cima do vídeo)
+       40   → GESTURE LAYER (captura toques/cliques)
+       50   → DEBUG PANEL (sempre no topo)
+       ===================================================== */
+
+    /* =====================================================
+       APP LAYER — container raiz, fake fullscreen
+       Imita o que Instagram/TikTok fazem:
+       ocupa toda a viewport sem usar requestFullscreen()
+       ===================================================== */
+    #app {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw;
+      height: 100dvh; /* dvh = Dynamic Viewport Height — essencial no iOS */
+      background: #000;
+      overflow: hidden;
+      z-index: 10;
+    }
+
+    /* =====================================================
+       VIDEO LAYER — iframe como background layer
+       ===================================================== */
+    #video-layer {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 20;
+      background: #000;
+    }
+
+    /*
+      Técnica object-fit para iframe:
+      Usamos um wrapper com padding-top para manter aspect ratio 9:16 (vertical)
+      ou 16:9 (horizontal), depois escalamos via transform para cobrir a tela.
+      Isso é o equivalente ao "object-fit: cover" para iframes.
+    */
+    #video-wrapper {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      /* Dimensões calculadas via JS ao redimensionar */
+      width: 100%;
+      height: 100%;
+      pointer-events: none; /* Overlays controlam interações */
+    }
+
+    #video-wrapper iframe {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      border: none;
+      /* pointer-events: none aqui faria o overlay capturar cliques MAS
+         impediria interação com o player. Deixamos none para que
+         os botões customizados (play/pause/mute) controlem tudo via API.
+         LIMITAÇÃO: YouTube proíbe overlays clicáveis sobre o iframe por ToS.
+         Na prática, qualquer clique que cai no iframe é capturado por ele.
+         Apps nativos (ExoPlayer/AVPlayer) não têm essa limitação. */
+      pointer-events: none;
+    }
+
+    /* Fallback quando autoplay falha */
+    #autoplay-fallback {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 20px 28px;
+      border-radius: 12px;
+      text-align: center;
+      z-index: 35;
+      cursor: pointer;
+      font-size: 16px;
+    }
+
+    #autoplay-fallback .play-icon {
+      font-size: 48px;
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    /* =====================================================
+       OVERLAY LAYER — UI social por cima do vídeo
+       ===================================================== */
+    #overlay-layer {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 30;
+      /* pointer-events: none no container, cada overlay define o seu */
+      pointer-events: none;
+    }
+
+    /* Gradiente escuro no bottom — estilo Instagram/TikTok */
+    .gradient-bottom {
+      position: absolute;
+      bottom: 0; left: 0;
+      width: 100%;
+      height: 60%;
+      background: linear-gradient(
+        to top,
+        rgba(0,0,0,0.85) 0%,
+        rgba(0,0,0,0.4) 50%,
+        transparent 100%
+      );
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Gradiente escuro no top — para legibilidade do header */
+    .gradient-top {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 25%;
+      background: linear-gradient(
+        to bottom,
+        rgba(0,0,0,0.7) 0%,
+        transparent 100%
+      );
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* --- HEADER (topo) --- */
+    .overlay-header {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      padding: 12px 16px;
+      padding-top: calc(12px + env(safe-area-inset-top));
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 31;
+      pointer-events: all;
+    }
+
+    .btn-close {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.5);
+      border: none;
+      color: #fff;
+      font-size: 20px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      transition: transform 0.15s;
+    }
+
+    .btn-close:active { transform: scale(0.92); }
+
+    /* Badge AO VIVO com pulse */
+    .badge-live {
+      display: none; /* visível só no modo live */
+      align-items: center;
+      gap: 6px;
+      background: #e11d48;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 4px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .badge-live.visible { display: flex; }
+
+    .badge-live .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #fff;
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.7); }
+    }
+
+    /* Contador de viewers */
+    .viewer-count {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      font-size: 13px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+
+    /* --- FOOTER (bottom) --- */
+    .overlay-footer {
+      position: absolute;
+      bottom: 0; left: 0;
+      width: 100%;
+      padding: 16px;
+      padding-bottom: calc(16px + env(safe-area-inset-bottom));
+      z-index: 31;
+      pointer-events: all;
+    }
+
+    /* Texto / título do vídeo estilo TikTok */
+    .video-title {
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+      line-height: 1.4;
+    }
+
+    .video-subtitle {
+      color: rgba(255,255,255,0.75);
+      font-size: 13px;
+      margin-bottom: 14px;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+    }
+
+    /* CTA flutuante */
+    .btn-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 12px 22px;
+      border-radius: 28px;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 20px rgba(99,102,241,0.45);
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+
+    .btn-cta:active {
+      transform: scale(0.96);
+      box-shadow: 0 2px 10px rgba(99,102,241,0.3);
+    }
+
+    /* --- SIDEBAR de ações (direita) — estilo TikTok/Reels --- */
+    .overlay-sidebar {
+      position: absolute;
+      right: 12px;
+      bottom: 100px;
+      bottom: calc(100px + env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+      z-index: 31;
+      pointer-events: all;
+    }
+
+    .sidebar-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      color: #fff;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .sidebar-btn .icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.15);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      transition: transform 0.15s, background 0.15s;
+    }
+
+    .sidebar-btn:active .icon {
+      transform: scale(0.88);
+      background: rgba(255,255,255,0.28);
+    }
+
+    .sidebar-btn .label {
+      font-size: 11px;
+      font-weight: 600;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    }
+
+    /* --- CONTROLES DO PLAYER (center-bottom) --- */
+    .player-controls {
+      position: absolute;
+      bottom: 90px;
+      left: 16px;
+      display: flex;
+      gap: 10px;
+      z-index: 31;
+      pointer-events: all;
+    }
+
+    .ctrl-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.5);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s;
+    }
+
+    .ctrl-btn:active { transform: scale(0.9); }
+
+    /* --- REACTIONS floating --- */
+    #reactions-container {
+      position: absolute;
+      bottom: 120px;
+      right: 60px;
+      width: 60px;
+      pointer-events: none;
+      z-index: 32;
+      overflow: visible;
+    }
+
+    .reaction {
+      position: absolute;
+      bottom: 0;
+      font-size: 24px;
+      animation: float-up 2.5s ease-out forwards;
+      opacity: 0;
+      user-select: none;
+    }
+
+    @keyframes float-up {
+      0%   { opacity: 1; transform: translateY(0) scale(1); }
+      20%  { opacity: 1; transform: translateY(-20px) scale(1.2); }
+      100% { opacity: 0; transform: translateY(-120px) scale(0.8) rotate(15deg); }
+    }
+
+    /* --- MODE SELECTOR (tabs no topo) --- */
+    .mode-selector {
+      position: absolute;
+      top: 0; left: 50%;
+      transform: translateX(-50%);
+      padding-top: calc(14px + env(safe-area-inset-top));
+      display: flex;
+      gap: 4px;
+      z-index: 32;
+      pointer-events: all;
+    }
+
+    .mode-btn {
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1.5px solid rgba(255,255,255,0.4);
+      background: transparent;
+      color: rgba(255,255,255,0.7);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .mode-btn.active {
+      background: #fff;
+      color: #000;
+      border-color: #fff;
+    }
+
+    /* =====================================================
+       GESTURE LAYER — captura gestos mas deixa cliques
+       dos overlays passarem (pointer-events: none aqui)
+       ===================================================== */
+    #gesture-layer {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 40;
+      pointer-events: none; /* overlays controlam os seus próprios cliques */
+    }
+
+    /* =====================================================
+       DEBUG PANEL
+       ===================================================== */
+    #debug-panel {
+      position: fixed;
+      bottom: 0; left: 0;
+      right: 0;
+      padding: 8px 12px;
+      padding-bottom: calc(8px + env(safe-area-inset-bottom));
+      background: rgba(0,0,0,0.85);
+      color: #0f0;
+      font-family: 'Courier New', monospace;
+      font-size: 10px;
+      z-index: 50;
+      display: none; /* toggle via botão */
+      flex-wrap: wrap;
+      gap: 6px 16px;
+    }
+
+    #debug-panel.visible { display: flex; }
+
+    .debug-item span { color: #999; }
+
+    .btn-debug-toggle {
+      position: fixed;
+      top: calc(14px + env(safe-area-inset-top));
+      right: 16px;
+      background: rgba(0,0,0,0.6);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.7);
+      font-size: 10px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      z-index: 51;
+    }
+
+    /* =====================================================
+       TOAST de notificação
+       ===================================================== */
+    #toast {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.8);
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 60;
+      opacity: 0;
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    #toast.show {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+
+    /* =====================================================
+       LANDSCAPE — ajustes quando rotaciona
+       ===================================================== */
+    @media (orientation: landscape) {
+      .overlay-sidebar {
+        right: calc(12px + env(safe-area-inset-right));
+        bottom: 60px;
+      }
+
+      .overlay-footer {
+        padding-left: calc(16px + env(safe-area-inset-left));
+        padding-right: calc(80px + env(safe-area-inset-right));
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+      }
+
+      .mode-selector {
+        top: 0;
+      }
+    }
+
+    /* =====================================================
+       DESKTOP — centraliza em frame mobile
+       ===================================================== */
+    @media (min-width: 600px) {
+      body {
+        background: #1a1a1a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      #app {
+        position: relative;
+        width: 390px;
+        height: 844px;
+        max-height: 100dvh;
+        border-radius: 44px;
+        overflow: hidden;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+      }
+
+      .btn-debug-toggle {
+        position: absolute;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<!-- =====================================================
+     APP LAYER — fake fullscreen root
+     ===================================================== -->
+<div id="app">
+
+  <!-- VIDEO LAYER -->
+  <div id="video-layer">
+    <div id="video-wrapper">
+      <!-- iframe inserido via JS -->
+    </div>
+  </div>
+
+  <!-- AUTOPLAY FALLBACK -->
+  <div id="autoplay-fallback" onclick="handleAutoplayFallback()">
+    <span class="play-icon">▶</span>
+    Toque para reproduzir
+  </div>
+
+  <!-- OVERLAY LAYER -->
+  <div id="overlay-layer">
+    <div class="gradient-top"></div>
+    <div class="gradient-bottom"></div>
+
+    <!-- MODE SELECTOR — tabs para trocar entre os 3 modos -->
+    <div class="mode-selector">
+      <button class="mode-btn active" onclick="switchMode('youtube-video')">YT Vídeo</button>
+      <button class="mode-btn" onclick="switchMode('youtube-live')">YT Live</button>
+      <button class="mode-btn" onclick="switchMode('vimeo')">Vimeo</button>
+    </div>
+
+    <!-- HEADER -->
+    <div class="overlay-header">
+      <button class="btn-close" onclick="showToast('Fechar')">✕</button>
+
+      <div class="badge-live" id="badge-live">
+        <span class="dot"></span>
+        AO VIVO
+      </div>
+
+      <div class="viewer-count" id="viewer-count">
+        👁 <span id="viewers-num">1.247</span>
+      </div>
+    </div>
+
+    <!-- SIDEBAR (direita) — estilo TikTok -->
+    <div class="overlay-sidebar">
+      <button class="sidebar-btn" onclick="showToast('❤️ Curtido!')">
+        <div class="icon">❤️</div>
+        <span class="label">12k</span>
+      </button>
+      <button class="sidebar-btn" onclick="showToast('💬 Comentários')">
+        <div class="icon">💬</div>
+        <span class="label">348</span>
+      </button>
+      <button class="sidebar-btn" onclick="showToast('↗️ Compartilhado!')">
+        <div class="icon">↗️</div>
+        <span class="label">Enviar</span>
+      </button>
+    </div>
+
+    <!-- PLAYER CONTROLS (esquerda/baixo) -->
+    <div class="player-controls">
+      <button class="ctrl-btn" id="btn-play" onclick="togglePlay()">⏸</button>
+      <button class="ctrl-btn" id="btn-mute" onclick="toggleMute()">🔇</button>
+      <!-- Fake fullscreen: apenas visual, já estamos em fake fullscreen -->
+      <button class="ctrl-btn" onclick="showToast('Já em fullscreen! (fake)')">⛶</button>
+    </div>
+
+    <!-- FOOTER -->
+    <div class="overlay-footer">
+      <div class="video-title" id="video-title">Título do Vídeo</div>
+      <div class="video-subtitle" id="video-subtitle">@canal • Social Video POC</div>
+      <button class="btn-cta" onclick="showToast('🎉 CTA clicado!')">
+        🚀 Saiba Mais
+      </button>
+    </div>
+
+    <!-- REACTIONS container -->
+    <div id="reactions-container"></div>
+  </div><!-- /overlay-layer -->
+
+  <!-- GESTURE LAYER (pointer-events: none — overlays capturam por cima) -->
+  <div id="gesture-layer"></div>
+
+</div><!-- /app -->
+
+<!-- DEBUG TOGGLE (fora do app para desktop) -->
+<button class="btn-debug-toggle" onclick="toggleDebug()">DEBUG</button>
+
+<!-- DEBUG PANEL -->
+<div id="debug-panel">
+  <div class="debug-item"><span>player:</span> <span id="dbg-player">—</span></div>
+  <div class="debug-item"><span>mode:</span> <span id="dbg-mode">—</span></div>
+  <div class="debug-item"><span>orient:</span> <span id="dbg-orient">—</span></div>
+  <div class="debug-item"><span>fake-fs:</span> <span id="dbg-fakefs">✓ ativo</span></div>
+  <div class="debug-item"><span>autoplay:</span> <span id="dbg-autoplay">—</span></div>
+  <div class="debug-item"><span>muted:</span> <span id="dbg-muted">—</span></div>
+  <div class="debug-item"><span>dvh:</span> <span id="dbg-dvh">—</span></div>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script>
+/* =====================================================
+   CONFIG CENTRALIZADA — troque as URLs aqui
+   ===================================================== */
+const SOURCES = {
+  // Vídeo YouTube normal (Big Buck Bunny — licença livre)
+  'youtube-video': {
+    type: 'youtube',
+    id: 'aqz-KE-bpKQ',
+    title: 'Big Buck Bunny',
+    subtitle: '@Blender • Video demo',
+    live: false,
+  },
+  // YouTube Live simulado — canal de notícias ao vivo
+  // (troque pelo ID de um live real se necessário)
+  'youtube-live': {
+    type: 'youtube',
+    id: 'jfKfPfyJRdk', // lofi hip hop — 24/7 live stream
+    title: 'lofi hip hop radio 📚',
+    subtitle: '@LofiGirl • AO VIVO',
+    live: true,
+  },
+  // Vimeo — vídeo de demonstração
+  'vimeo': {
+    type: 'vimeo',
+    id: '824804225',
+    title: 'Vimeo Demo',
+    subtitle: '@Vimeo Staff Pick • HD',
+    live: false,
+  },
+};
+
+/* =====================================================
+   ESTADO GLOBAL
+   ===================================================== */
+let currentMode = 'youtube-video';
+let ytPlayer = null;        // instância da YouTube IFrame API
+let isMuted = true;         // começa mutado (obrigatório para autoplay)
+let isPlaying = true;
+let autoplayOk = false;
+let reactionTimer = null;
+
+/* =====================================================
+   YOUTUBE IFRAME API
+   Docs: https://developers.google.com/youtube/iframe_api
+
+   LIMITAÇÕES IMPORTANTES:
+   - YouTube ToS proíbe overlays clicáveis sobre o player iframe
+   - O iframe captura todos os eventos de clique dentro da sua área
+   - Não é possível customizar os controles nativos via CSS externo
+   - autoplay só funciona com mute=1 na maioria dos browsers/iOS
+   - playsinline=1 obrigatório para evitar fullscreen automático no iOS
+   - Em iOS, o player abre em fullscreen nativo sem playsinline=1
+   - A API JS (ytPlayer.playVideo()) pode ser bloqueada por policy
+   - Diferente de ExoPlayer (Android) ou AVPlayer (iOS) onde você
+     controla o player nativamente e pode colocar qualquer overlay
+   ===================================================== */
+
+// Carrega a YouTube IFrame API de forma assíncrona
+function loadYouTubeAPI() {
+  if (window.YT) { initMode(currentMode); return; }
+  const tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+}
+
+// Callback global que a API do YouTube chama quando está pronta
+window.onYouTubeIframeAPIReady = function() {
+  updateDebug('autoplay', 'API pronta');
+  initMode(currentMode);
+};
+
+/* =====================================================
+   INICIALIZA MODO
+   ===================================================== */
+function initMode(mode) {
+  currentMode = mode;
+  const source = SOURCES[mode];
+
+  // Atualiza UI
+  document.getElementById('video-title').textContent = source.title;
+  document.getElementById('video-subtitle').textContent = source.subtitle;
+
+  const badgeLive = document.getElementById('badge-live');
+  if (source.live) {
+    badgeLive.classList.add('visible');
+  } else {
+    badgeLive.classList.remove('visible');
+  }
+
+  // Atualiza tabs
+  document.querySelectorAll('.mode-btn').forEach((btn, i) => {
+    const modes = ['youtube-video', 'youtube-live', 'vimeo'];
+    btn.classList.toggle('active', modes[i] === mode);
+  });
+
+  // Cria o player correto
+  if (source.type === 'youtube') {
+    createYouTubePlayer(source.id);
+  } else {
+    createVimeoPlayer(source.id);
+  }
+
+  updateDebug('player', source.type);
+  updateDebug('mode', mode);
+  updateDebug('muted', isMuted ? 'sim' : 'não');
+}
+
+/* =====================================================
+   YOUTUBE PLAYER
+   ===================================================== */
+function createYouTubePlayer(videoId) {
+  const wrapper = document.getElementById('video-wrapper');
+  wrapper.innerHTML = '<div id="yt-player-el"></div>';
+
+  // Destrói player anterior se existir
+  if (ytPlayer && ytPlayer.destroy) {
+    try { ytPlayer.destroy(); } catch(e) {}
+  }
+
+  if (!window.YT || !window.YT.Player) {
+    // API ainda carregando — tenta depois
+    setTimeout(() => createYouTubePlayer(videoId), 500);
+    return;
+  }
+
+  ytPlayer = new YT.Player('yt-player-el', {
+    width: '100%',
+    height: '100%',
+    videoId: videoId,
+    playerVars: {
+      // autoplay: o browser exige mute=1 para autoplay funcionar
+      autoplay: 1,
+      mute: 1,       // OBRIGATÓRIO para autoplay no mobile
+      controls: 0,   // esconde controles nativos
+      rel: 0,        // sem vídeos relacionados
+      playsinline: 1,// OBRIGATÓRIO: evita fullscreen automático no iOS
+      fs: 0,         // desabilita botão fullscreen nativo
+      modestbranding: 1,
+      iv_load_policy: 3, // sem anotações
+      disablekb: 1,  // sem controles de teclado
+      enablejsapi: 1,// habilita controle via JS
+      origin: window.location.origin || 'http://localhost',
+    },
+    events: {
+      onReady: onYTReady,
+      onStateChange: onYTStateChange,
+      onError: onYTError,
+    },
+  });
+
+  // Ajusta estilo do container gerado pela API
+  setTimeout(() => {
+    const el = document.getElementById('yt-player-el');
+    if (el) {
+      el.style.width = '100%';
+      el.style.height = '100%';
+      const iframe = el.querySelector('iframe');
+      if (iframe) {
+        iframe.style.width = '100%';
+        iframe.style.height = '100%';
+        iframe.style.border = 'none';
+        iframe.style.pointerEvents = 'none';
+      }
+    }
+  }, 300);
+
+  isMuted = true;
+  updateBtnMute();
+}
+
+function onYTReady(event) {
+  event.target.playVideo();
+  autoplayOk = true;
+  document.getElementById('autoplay-fallback').style.display = 'none';
+  updateDebug('autoplay', '✓ ok');
+  isPlaying = true;
+  updateBtnPlay();
+}
+
+function onYTStateChange(event) {
+  // YT.PlayerState: -1=unstarted, 0=ended, 1=playing, 2=paused, 3=buffering, 5=cued
+  if (event.data === YT.PlayerState.PLAYING) {
+    isPlaying = true;
+    autoplayOk = true;
+    document.getElementById('autoplay-fallback').style.display = 'none';
+    updateDebug('autoplay', '✓ playing');
+  } else if (event.data === YT.PlayerState.PAUSED) {
+    isPlaying = false;
+  } else if (event.data === -1 || event.data === YT.PlayerState.BUFFERING) {
+    // Pode ser que autoplay foi bloqueado
+    setTimeout(() => {
+      if (!autoplayOk) {
+        document.getElementById('autoplay-fallback').style.display = 'block';
+        updateDebug('autoplay', '⚠ bloqueado');
+      }
+    }, 3000);
+  }
+  updateBtnPlay();
+}
+
+function onYTError(event) {
+  console.warn('YouTube error:', event.data);
+  updateDebug('autoplay', '✗ erro ' + event.data);
+  // Erros comuns:
+  // 2 = parâmetro inválido
+  // 5 = erro HTML5 player
+  // 100 = vídeo não encontrado
+  // 101/150 = embedding desabilitado pelo owner
+  showToast('Erro no player: ' + event.data);
+}
+
+/* =====================================================
+   VIMEO PLAYER
+   ===================================================== */
+function createVimeoPlayer(videoId) {
+  const wrapper = document.getElementById('video-wrapper');
+  ytPlayer = null;
+
+  /*
+    LIMITAÇÕES DO VIMEO iframe:
+    - O parâmetro background=1 esconde controles e remove interação
+    - autoplay=1 com muted=1 funciona melhor que YouTube no mobile
+    - Não tem API tão completa quanto YouTube IFrame API para controles externos
+    - background=1 desabilita controles completamente (ideal para POC)
+    - Diferente do YouTube, Vimeo permite mais customização visual
+  */
+  wrapper.innerHTML = `
+    <iframe
+      id="vimeo-iframe"
+      src="https://player.vimeo.com/video/${videoId}?autoplay=1&muted=1&loop=1&background=1&playsinline=1&quality=auto"
+      width="100%"
+      height="100%"
+      frameborder="0"
+      allow="autoplay; fullscreen; picture-in-picture"
+      allowfullscreen
+      style="width:100%;height:100%;border:none;pointer-events:none;"
+    ></iframe>
+  `;
+
+  autoplayOk = true;
+  isPlaying = true;
+  isMuted = true;
+
+  updateBtnPlay();
+  updateBtnMute();
+  updateDebug('autoplay', 'vimeo (background mode)');
+  updateDebug('muted', 'sim (background=1)');
+}
+
+/* =====================================================
+   CONTROLES DO PLAYER
+   ===================================================== */
+function togglePlay() {
+  const source = SOURCES[currentMode];
+
+  if (source.type === 'youtube' && ytPlayer) {
+    if (isPlaying) {
+      ytPlayer.pauseVideo();
+    } else {
+      ytPlayer.playVideo();
+    }
+  } else {
+    // Vimeo background mode não tem API de play/pause via iframe simples
+    showToast('Play/Pause: Vimeo background mode não suporta');
+  }
+
+  isPlaying = !isPlaying;
+  updateBtnPlay();
+  updateDebug('autoplay', isPlaying ? 'playing' : 'paused');
+}
+
+function toggleMute() {
+  const source = SOURCES[currentMode];
+
+  if (source.type === 'youtube' && ytPlayer) {
+    if (isMuted) {
+      ytPlayer.unMute();
+      ytPlayer.setVolume(80);
+    } else {
+      ytPlayer.mute();
+    }
+  } else {
+    showToast('Mute: use controles do Vimeo (background mode)');
+  }
+
+  isMuted = !isMuted;
+  updateBtnMute();
+  updateDebug('muted', isMuted ? 'sim' : 'não');
+}
+
+function updateBtnPlay() {
+  document.getElementById('btn-play').textContent = isPlaying ? '⏸' : '▶';
+}
+
+function updateBtnMute() {
+  document.getElementById('btn-mute').textContent = isMuted ? '🔇' : '🔊';
+}
+
+/* =====================================================
+   TROCA DE MODO (sem reload)
+   ===================================================== */
+function switchMode(mode) {
+  if (mode === currentMode) return;
+  autoplayOk = false;
+  isPlaying = true;
+  initMode(mode);
+  showToast('Modo: ' + SOURCES[mode].title);
+}
+
+/* =====================================================
+   AUTOPLAY FALLBACK
+   ===================================================== */
+function handleAutoplayFallback() {
+  document.getElementById('autoplay-fallback').style.display = 'none';
+
+  if (SOURCES[currentMode].type === 'youtube' && ytPlayer) {
+    ytPlayer.playVideo();
+    autoplayOk = true;
+    isPlaying = true;
+    updateBtnPlay();
+    updateDebug('autoplay', '✓ manual play');
+  }
+}
+
+/* =====================================================
+   REACTIONS ANIMADOS — fake, estilo Instagram Live
+   ===================================================== */
+const EMOJIS = ['❤️','🔥','👏','😍','🎉','💜','⭐','🚀'];
+let reactionCount = 0;
+
+function spawnReaction() {
+  const container = document.getElementById('reactions-container');
+  const el = document.createElement('div');
+  el.className = 'reaction';
+  el.textContent = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+  el.style.left = (Math.random() * 30) + 'px';
+  container.appendChild(el);
+
+  // Remove após animação
+  el.addEventListener('animationend', () => el.remove());
+}
+
+function startReactions() {
+  // Dispara reactions em intervalos aleatórios
+  reactionTimer = setInterval(() => {
+    if (Math.random() > 0.4) spawnReaction();
+  }, 800);
+}
+
+/* =====================================================
+   CONTADOR FAKE de viewers (simula streaming real)
+   ===================================================== */
+let viewerBase = 1247;
+
+function updateViewerCount() {
+  const delta = Math.floor(Math.random() * 10) - 4; // -4 a +5
+  viewerBase = Math.max(100, viewerBase + delta);
+  const el = document.getElementById('viewers-num');
+  if (el) {
+    el.textContent = viewerBase >= 1000
+      ? (viewerBase / 1000).toFixed(1) + 'k'
+      : viewerBase;
+  }
+}
+
+/* =====================================================
+   DEBUG PANEL
+   ===================================================== */
+function updateDebug(key, value) {
+  const el = document.getElementById('dbg-' + key);
+  if (el) el.textContent = value;
+}
+
+function toggleDebug() {
+  document.getElementById('debug-panel').classList.toggle('visible');
+}
+
+function updateOrientDebug() {
+  const orient = screen.orientation
+    ? screen.orientation.type
+    : (window.innerWidth > window.innerHeight ? 'landscape' : 'portrait');
+  updateDebug('orient', orient);
+  updateDebug('dvh', window.innerHeight + 'px');
+}
+
+/* =====================================================
+   TOAST
+   ===================================================== */
+let toastTimer;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+/* =====================================================
+   EVENTS
+   ===================================================== */
+window.addEventListener('resize', updateOrientDebug);
+window.addEventListener('orientationchange', updateOrientDebug);
+
+/* =====================================================
+   INIT
+   ===================================================== */
+updateOrientDebug();
+updateDebug('fakefs', '✓ 100vw × 100dvh');
+loadYouTubeAPI();
+startReactions();
+setInterval(updateViewerCount, 2500);
+
+// Mostra fallback se autoplay não arrancar em 4s
+setTimeout(() => {
+  if (!autoplayOk && SOURCES[currentMode].type === 'youtube') {
+    document.getElementById('autoplay-fallback').style.display = 'block';
+    updateDebug('autoplay', '⚠ aguardando interação');
+  }
+}, 4000);
+</script>
+
+<!--
+  =====================================================
+  NOTAS TÉCNICAS — LIMITAÇÕES DE IFRAME
+  =====================================================
+
+  1. OVERLAYS SOBRE IFRAME:
+     - Qualquer clique/touch que cai dentro da área do iframe é
+       capturado pelo iframe, não pelo HTML pai.
+     - pointer-events: none no iframe permite que overlays recebam
+       cliques, mas impede qualquer interação com o player nativo.
+     - Solução nesta POC: pointer-events: none no iframe + controles
+       customizados via YouTube IFrame API JS.
+
+  2. YOUTUBE IFRAME API:
+     - Controle programático via JS (play, pause, mute) funciona.
+     - Não é possível modificar CSS do player interno.
+     - autoplay exige mute=1 por política de browsers (Chrome, Safari, Firefox).
+     - iOS Safari: playsinline=1 é OBRIGATÓRIO ou abre em fullscreen nativo.
+     - YouTube ToS proíbe overlays que cubram o player de forma enganosa.
+
+  3. VIMEO:
+     - background=1 remove controles e interação completamente.
+     - Ideal para uso como background layer, mas perde controle granular.
+     - Sem API JS fácil em iframe simples (precisa do Vimeo Player SDK).
+
+  4. POR QUE APPS NATIVOS SÃO MELHORES:
+     - React Native ExoPlayer (Android) / AVPlayer (iOS):
+       * Overlay nativo renderizado na mesma view tree do player
+       * Sem restrições de iframe/cross-origin
+       * Controle total sobre play/pause/seek/qualidade
+       * Sem limitações de autoplay mobile
+       * Sem dependência da ToS do YouTube/Vimeo
+     - Esta POC valida a UX/layout; produção usaria player nativo.
+
+  5. FAKE FULLSCREEN:
+     - Usamos position:fixed + 100vw + 100dvh ao invés de requestFullscreen()
+     - dvh (Dynamic Viewport Height) evita o bug do Safari iOS onde
+       100vh inclui a barra de navegação
+     - env(safe-area-inset-*) garante suporte a notch/Dynamic Island
+-->
+</body>
+</html>
