@@ -971,6 +971,29 @@ function updateBtnMute() {
    então cai no fallback de toast.
    ===================================================== */
 function handleClose() {
+  // 1. Para o player e sincroniza estado interno antes de fechar
+  const source = SOURCES[currentMode];
+
+  if (source.type === 'youtube' && ytPlayer && typeof ytPlayer.pauseVideo === 'function') {
+    ytPlayer.pauseVideo();
+    ytPlayer.mute();
+  } else if (source.type === 'vimeo') {
+    const iframe = document.getElementById('vimeo-iframe');
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage(JSON.stringify({ method: 'pause' }), 'https://player.vimeo.com');
+      iframe.contentWindow.postMessage(JSON.stringify({ method: 'setVolume', value: 0 }), 'https://player.vimeo.com');
+    }
+  }
+
+  // 2. Atualiza estado interno — garante UI correta ao reabrir
+  isPlaying = false;
+  isMuted = true;
+  updateBtnPlay();
+  updateBtnMute();
+  updateDebug('autoplay', 'pausado');
+  updateDebug('muted', 'sim');
+
+  // 3. Agora sim avisa o RN fechar
   if (window.ReactNativeWebView) {
     window.ReactNativeWebView.postMessage('close');
   } else {
