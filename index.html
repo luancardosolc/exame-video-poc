@@ -575,7 +575,7 @@
 
     <!-- HEADER -->
     <div class="overlay-header">
-      <button class="btn-close" onclick="showToast('Fechar')">✕</button>
+      <button class="btn-close" onclick="handleClose()">✕</button>
 
       <div class="badge-live" id="badge-live">
         <span class="dot"></span>
@@ -963,6 +963,19 @@ function updateBtnPlay() {
 
 function updateBtnMute() {
   document.getElementById('btn-mute').textContent = isMuted ? '🔇' : '🔊';
+}
+
+/* =====================================================
+   FECHAR — comunica com React Native via postMessage
+   No browser normal window.ReactNativeWebView não existe,
+   então cai no fallback de toast.
+   ===================================================== */
+function handleClose() {
+  if (window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage('close');
+  } else {
+    showToast('Fechar (sem WebView)');
+  }
 }
 
 /* =====================================================
