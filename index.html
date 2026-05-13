@@ -539,6 +539,24 @@
         position: absolute;
       }
     }
+
+    /* =====================================================
+       WEBVIEW — dentro do React Native (phone ou tablet)
+       desfaz o frame de desktop e ocupa 100% da tela.
+       Especificidade maior que o media query acima, sem !important.
+       ===================================================== */
+    body.in-webview {
+      background: #000;
+      display: block;
+    }
+
+    body.in-webview #app {
+      position: fixed;
+      width: 100vw;
+      height: 100dvh;
+      border-radius: 0;
+      box-shadow: none;
+    }
   </style>
 </head>
 <body>
@@ -646,6 +664,11 @@
 <div id="toast"></div>
 
 <script>
+// Detecta WebView antes do primeiro frame — evita flash do frame de desktop em tablets
+if (window.ReactNativeWebView) {
+  document.body.classList.add('in-webview');
+}
+
 /* =====================================================
    CONFIG CENTRALIZADA — troque as URLs aqui
    ===================================================== */
