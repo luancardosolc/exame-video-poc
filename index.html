@@ -607,8 +607,7 @@
     <div class="player-controls">
       <button class="ctrl-btn" id="btn-play" onclick="togglePlay()">⏸</button>
       <button class="ctrl-btn" id="btn-mute" onclick="toggleMute()">🔇</button>
-      <!-- Fake fullscreen: apenas visual, já estamos em fake fullscreen -->
-      <button class="ctrl-btn" onclick="showToast('Já em fullscreen! (fake)')">⛶</button>
+      <button class="ctrl-btn" id="btn-fullscreen" onclick="handleFullscreen()">⛶</button>
     </div>
 
     <!-- FOOTER -->
@@ -685,6 +684,7 @@ let currentMode = 'youtube-video';
 let ytPlayer = null;        // instância da YouTube IFrame API
 let isMuted = true;         // começa mutado (obrigatório para autoplay)
 let isPlaying = true;
+let isFullscreen = false;   // false = portrait, true = landscape via RN
 let autoplayOk = false;
 let reactionTimer = null;
 
@@ -963,6 +963,34 @@ function updateBtnPlay() {
 
 function updateBtnMute() {
   document.getElementById('btn-mute').textContent = isMuted ? '🔇' : '🔊';
+}
+
+/* =====================================================
+   FULLSCREEN — solicita rotação para landscape via RN
+   screen.orientation.lock() não funciona em iOS WebView,
+   então delegamos para o app nativo via postMessage.
+   O RN usa expo-screen-orientation para girar a tela.
+   ===================================================== */
+function handleFullscreen() {
+  isFullscreen = !isFullscreen;
+
+  if (window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage(isFullscreen ? 'enterFullscreen' : 'exitFullscreen');
+  } else {
+    showToast(isFullscreen ? '↔ Fullscreen (RN giraria a tela)' : '↕ Retrato (RN desbloquearia)');
+  }
+
+  updateBtnFullscreen();
+  updateDebug('fakefs', isFullscreen ? '↔ landscape' : '✓ portrait');
+}
+
+function updateBtnFullscreen() {
+  const btn = document.getElementById('btn-fullscreen');
+  if (!btn) return;
+  // Fundo mais claro indica que fullscreen está ativo
+  btn.style.background = isFullscreen
+    ? 'rgba(255,255,255,0.28)'
+    : 'rgba(0,0,0,0.5)';
 }
 
 /* =====================================================
