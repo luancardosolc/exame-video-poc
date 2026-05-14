@@ -32,6 +32,10 @@ python3 -m http.server 8080
 | Debug panel | ✅ |
 | Autoplay fallback | ✅ |
 
+## Documentação
+
+- [Fullscreen em WebView](docs/fullscreen-webview.md)
+
 ## Modos disponíveis
 
 - **YT Vídeo** — YouTube IFrame API, vídeo normal
